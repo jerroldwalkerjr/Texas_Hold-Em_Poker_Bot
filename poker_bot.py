@@ -26,7 +26,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
-from typing import List, Dict, Tuple
+from typing import List, Dict
 
 import websockets
 
@@ -326,12 +326,10 @@ class Strategy:
             return 0.0
         return state.to_call / (state.pot_size + state.to_call)
 
-    def choose_action(self, state: GameState) -> Tuple[Dict, Dict]:
+    def choose_action(self, state: GameState) -> Dict:
         """
         Returns:
-            (decision, debug_info)
-            decision: {"action": "fold" | "call" | "raise" | "bet" | "check", "amount": optional}
-            debug_info: {"equity": float, "adjusted_equity": float, "pot_odds": float, "num_opponents": int}
+            {"action": "fold" | "call" | "raise" | "bet" | "check", "amount": optional}
         """
         # Estimate equity via Monte Carlo
         equity = estimate_equity(
@@ -342,15 +340,6 @@ class Strategy:
         )
 
         pot_odds = self.compute_pot_odds(state)
-        debug_info = {
-            "equity": equity,
-            "adjusted_equity": 0.0,  # filled below
-            "pot_odds": pot_odds,
-            "num_opponents": state.num_active_opponents,
-        }
-
-        def finalize(decision: Dict) -> Tuple[Dict, Dict]:
-            return decision, debug_info
 
         # Opponent-based slight adjustment
         tight_count = sum(
@@ -366,41 +355,40 @@ class Strategy:
         if tight_count > loose_count:
             adj_equity += 0.05  # table is tight → bluff/value more
         adj_equity = max(0.0, min(1.0, adj_equity))
-        debug_info["adjusted_equity"] = adj_equity
 
         # Preflop special rules
         if state.street == "preflop":
-            return finalize(self.preflop_decision(state, adj_equity))
+            return self.preflop_decision(state, adj_equity)
 
         # Postflop logic
         margin = 0.05
         if state.to_call > 0:
             if adj_equity + margin < pot_odds:
-                return finalize({"action": "fold"})
+                return {"action": "fold"}
 
             # Call region
             if adj_equity < pot_odds + 0.15:
-                return finalize({"action": "call"})
+                return {"action": "call"}
 
             # Strong → raise/value
             raise_size = min(state.hero_stack, state.pot_size * 0.75 + state.to_call)
             if raise_size <= state.to_call:
-                return finalize({"action": "call"})
-            return finalize({"action": "raise", "amount": raise_size})
+                return {"action": "call"}
+            return {"action": "raise", "amount": raise_size}
         else:
             # No bet to us (we can check or bet)
             if adj_equity < 0.35:
-                return finalize({"action": "check"})
+                return {"action": "check"}
             elif adj_equity < 0.55:
                 # semi-bluff
                 if random.random() < 0.4:
                     bet_size = min(state.hero_stack, state.pot_size * 0.5)
-                    return finalize({"action": "bet", "amount": bet_size})
-                return finalize({"action": "check"})
+                    return {"action": "bet", "amount": bet_size}
+                return {"action": "check"}
             else:
                 # strong value bet
                 bet_size = min(state.hero_stack, state.pot_size * 0.75)
-                return finalize({"action": "bet", "amount": bet_size})
+                return {"action": "bet", "amount": bet_size}
 
     def preflop_decision(self, state: GameState, adj_equity: float) -> Dict:
         """
@@ -480,41 +468,21 @@ class PokerBot:
         async with websockets.connect(self.uri) as ws:
             # Join the table as per README
             await ws.send(json.dumps({"type": "join"}))
-            print(f"[INFO] Joined as {self.hero_id} on {self.table} at {self.host}", flush=True)
+            print(f"[INFO] Joined as {self.hero_id} on {self.table} at {self.host}")
 
             while True:
                 raw = await ws.recv()
-                print("[RAW]", raw, flush=True)
                 data = json.loads(raw)
                 msg_type = data.get("type")
 
                 if msg_type == "state":
                     await self.handle_state(ws, data)
                 elif msg_type == "error":
-                    print("[ENGINE ERROR]:", data.get("message") or data.get("error"), flush=True)
+                    print("[ENGINE ERROR]:", data.get("message"))
                 else:
                     # Optionally log unknown messages
                     # print("[DEBUG] Unknown message:", data)
                     pass
-
-    def log_decision(self, state: GameState, decision: Dict, debug_info: Dict):
-        hole = [card_str(c) for c in state.hole_cards]
-        board = [card_str(c) for c in state.board_cards]
-        action = decision.get("action", "").upper()
-        amount = decision.get("amount")
-        amount_str = f" {amount:.2f}" if amount is not None else ""
-        print("[INFO] My turn — deciding action...", flush=True)
-        print(f"Street: {state.street.upper()}  Pot: {state.pot_size:.2f}  To call: {state.to_call:.2f}  Stack: {state.hero_stack:.2f}", flush=True)
-        print(f"Hole Cards: {hole}", flush=True)
-        print(f"Board: {board}", flush=True)
-        print(
-            "Equity: "
-            f"{debug_info.get('equity', 0):.2f} "
-            f"(adj: {debug_info.get('adjusted_equity', 0):.2f}, "
-            f"pot_odds: {debug_info.get('pot_odds', 0):.2f})",
-            flush=True,
-        )
-        print(f"Decision: {action}{amount_str}", flush=True)
 
     async def handle_state(self, ws, data: Dict):
         """
@@ -539,61 +507,56 @@ class PokerBot:
         2) Then adjust the code in the marked TODO section below.
         """
 
-        # Debug: uncomment this once to inspect the real state structure
-        # print("[STATE]:", json.dumps(data, indent=2), flush=True)
+        # Debug (compact summary so logs stay short)
+        state_payload = data.get("state", {})
+        table_payload = state_payload.get("table", {})
+        players_payload = table_payload.get("players", [])
+        turn_idx = state_payload.get("toActIdx")
+        turn_id = None
+        if isinstance(turn_idx, int) and 0 <= turn_idx < len(players_payload):
+            turn_id = players_payload[turn_idx].get("id")
+        phase_summary = (state_payload.get("phase") or table_payload.get("phase") or "").upper()
+        print(
+            f"[STATE] hand={state_payload.get('hand')} phase={phase_summary} "
+            f"toActIdx={turn_idx} toActID={turn_id} pot={state_payload.get('pot')} "
+            f"hero={self.hero_id} players={[p.get('id') for p in players_payload]}",
+            flush=True,
+        )
 
-        # Normalize the engine payload we actually see: data["state"] -> table/players
-        state_raw = data.get("state", {})
-        table_raw = state_raw.get("table", {})
+        phase_raw = data.get("phase", "").lower()  # "PREFLOP" → "preflop"
+        street = phase_raw  # "preflop", "flop", "turn", "river", "showdown"? etc.
 
-        # Phase/street
-        phase_raw = (state_raw.get("phase") or table_raw.get("phase") or "").lower()
-        street = phase_raw  # "preflop", "flop", "turn", "river", etc.
+        # ==== TODO: BEGIN mapping engine JSON → our internal format ====
 
-        # Players array from table
-        players = table_raw.get("players", [])
+        # The following field names are assumptions.
+        # You MUST check against actual messages from your engine and adjust.
+
+        # Players array: list of dicts
+        # Expected example:
+        # "players": [
+        #   { "id": "p1", "stack": 950, "bet": 50, "inHand": true, "cards": ["Ah","Kd"] },
+        #   { "id": "p2", "stack": 1200, "bet": 100, "inHand": true }
+        # ]
+        players = data.get("players", [])
         if not players:
-            print("[DEBUG] state has no players; skipping", flush=True)
+            # If the engine doesn't send players here, adjust accordingly.
             return
 
-        # Whose turn: the engine gives an index
-        turn_idx = state_raw.get("toActIdx", 0)
-        turn_player = None
-        if isinstance(turn_idx, int) and 0 <= turn_idx < len(players):
-            turn_player = players[turn_idx].get("id")
+        # Which player's turn is it?
+        # Expected field: "turn": "p1"
+        turn_player = data.get("turn")
 
         # Pot size
-        pot = float(state_raw.get("pot", 0))
+        pot = float(data.get("pot", 0))
 
-        # Amount hero must call (not present in sample; assume 0 preflop unless added later)
-        to_call = float(state_raw.get("toCall", 0) or 0)
+        # Amount hero must call
+        # Expected field: "callAmount": 50
+        to_call = float(data.get("callAmount", 0))
 
         # Community cards
-        community_raw = state_raw.get("board") or table_raw.get("cardOpen") or []
-
-        def convert_card(obj):
-            """Handle either string like 'Ah' or dict like {'rank':'A','suit':'HEART'}."""
-            if isinstance(obj, str):
-                return parse_card(obj)
-            if isinstance(obj, dict):
-                rank_map = {
-                    "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7",
-                    "8": "8", "9": "9", "10": "T", "T": "T", "J": "J",
-                    "Q": "Q", "K": "K", "A": "A",
-                }
-                suit_map = {
-                    "CLUB": "c", "CLUBS": "c",
-                    "DIAMOND": "d", "DIAMONDS": "d",
-                    "HEART": "h", "HEARTS": "h",
-                    "SPADE": "s", "SPADES": "s",
-                }
-                r = rank_map.get(str(obj.get("rank")).upper())
-                s = suit_map.get(str(obj.get("suit")).upper())
-                if r and s:
-                    return parse_card(f"{r}{s}")
-            raise ValueError(f"Unrecognized card format: {obj!r}")
-
-        board_cards = [convert_card(c) for c in community_raw]
+        # Expected field: "community": ["Ah","9d","3s","Td"]
+        community_raw = data.get("community", [])
+        board_cards = [parse_card(c) for c in community_raw]
 
         # Find hero entry
         hero_entry = None
@@ -602,30 +565,25 @@ class PokerBot:
                 hero_entry = p
                 break
         if hero_entry is None:
-            print("[DEBUG] hero not found in players; skipping", flush=True)
             # Not seated / between hands
             return
 
-        hero_stack = float(hero_entry.get("stack", hero_entry.get("chips", 0)))
-        hero_bet = float(hero_entry.get("bet", hero_entry.get("wager", 0)))
+        hero_stack = float(hero_entry.get("stack", 0))
+        hero_bet = float(hero_entry.get("bet", 0))
 
         # Hero hole cards: we try several possible keys
         hero_cards_raw = hero_entry.get("cards") or hero_entry.get("hole") or hero_entry.get("hand") or []
         if len(hero_cards_raw) == 2:
-            try:
-                self.hole_cards = [convert_card(c) for c in hero_cards_raw]
-            except Exception as exc:
-                print(f"[DEBUG] failed to parse hole cards {hero_cards_raw}: {exc}", flush=True)
+            self.hole_cards = [parse_card(c) for c in hero_cards_raw]
 
         if len(self.hole_cards) != 2:
-            print("[DEBUG] hole cards missing; skipping", flush=True)
             # No hole cards yet (maybe between hands)
             return
 
         # Determine min_raise:
         # Typical logic: min raise = current highest bet * 2 - your bet
-        max_bet = max(float(p.get("bet", p.get("wager", 0))) for p in players)
-        min_raise = max(max_bet * 2 - hero_bet, max(max_bet - hero_bet, 1.0))
+        max_bet = max(float(p.get("bet", 0)) for p in players)
+        min_raise = max(max_bet * 2 - hero_bet, max_bet - hero_bet)
 
         # Active opponents still in the hand
         opponent_ids = [
@@ -640,7 +598,6 @@ class PokerBot:
 
         # Only act if it's actually our turn
         if turn_player != self.hero_id:
-            print(f"[DEBUG] not hero turn ({turn_player}); skipping", flush=True)
             return
 
         # Build GameState
@@ -657,25 +614,26 @@ class PokerBot:
             opponent_ids=opponent_ids,
         )
 
-        decision, debug_info = self.strategy.choose_action(state)
-        self.log_decision(state, decision, debug_info)
+        decision = self.strategy.choose_action(state)
 
-        # Map internal decision → engine action message expected by the Go engine README
+        print("=== MY TURN ===")
+        print("Street:", street.upper())
+        print("Hole:", [card_str(c) for c in self.hole_cards])
+        print("Board:", [card_str(c) for c in board_cards])
+        print("Pot:", pot, "To call:", to_call, "Stack:", hero_stack)
+        print("Decision:", decision)
+
+        # Map internal decision → engine action message
         action_type = decision["action"]
-
-        # Engine expects: { "type": "act", "action": "<CHECK|CALL|RAISE|FOLD>", "amount": optional, "player": "<id>" }
-        action_upper = action_type.upper()
-        if action_upper == "CHECK":
-            msg = {"type": "act", "action": "CHECK", "player": self.hero_id}
-        elif action_upper == "CALL":
-            msg = {"type": "act", "action": "CALL", "player": self.hero_id}
-        elif action_upper in ("BET", "RAISE"):
-            amount = int(round(float(decision.get("amount", 0))))
-            msg = {"type": "act", "action": "RAISE", "amount": amount, "player": self.hero_id}
+        if action_type in ("check", "call", "fold"):
+            msg = {"type": "action", "action": action_type}
+        elif action_type in ("bet", "raise"):
+            amount = float(decision.get("amount", 0))
+            msg = {"type": "action", "action": "raise", "amount": round(amount, 2)}
         else:
-            msg = {"type": "act", "action": "FOLD", "player": self.hero_id}
+            # Fallback safety
+            msg = {"type": "action", "action": "fold"}
 
-        print("[TX]", msg, flush=True)
         await ws.send(json.dumps(msg))
 
 
