@@ -433,10 +433,12 @@ class Strategy:
 
     def preflop_decision(self, state: GameState, adj_equity: float) -> Dict:
         """
-        Simple preflop strategy based on:
-        - pocket pairs
-        - broadway cards
-        - suited / connectedness
+        Revised preflop ranges:
+        - Premium raises: AA–TT, AKs, AKo
+        - Strong raises: 99–77, AQs–ATs, AQo
+        - Playable calls: 66–22, suited connectors 98s–65s, KQs–KTs
+        - Otherwise fold to raises
+        - If unopened pot and hand is playable, raise 70% / call 30%
         """
         c1, c2 = state.hole_cards
         ranks_sorted = sorted([c1.rank, c2.rank], reverse=True)
@@ -445,44 +447,65 @@ class Strategy:
         low_card = ranks_sorted[1]
 
         is_pair = c1.rank == c2.rank
-        is_premium_pair = is_pair and c1.rank >= RANK_TO_INT["T"]  # TT+
-        is_mid_pair = is_pair and RANK_TO_INT["6"] <= c1.rank <= RANK_TO_INT["9"]
+        rank_high = high_card
+        rank_low = low_card
 
-        is_broadway = high_card >= RANK_TO_INT["T"]
-        gap = high_card - low_card
+        # Range helpers
+        is_premium = (
+            (is_pair and rank_high >= RANK_TO_INT["T"]) or  # AA–TT
+            (rank_high == RANK_TO_INT["A"] and rank_low == RANK_TO_INT["K"])  # AK
+        ) and (same_suit or not same_suit)
+        is_premium = is_premium and (
+            is_pair or same_suit or not same_suit
+        )  # keep logic explicit (AKs/AKo already covered)
 
-        if is_premium_pair or (is_broadway and same_suit and gap <= 3):
-            # Premium hand
-            if state.to_call == 0:
-                raise_size = min(state.hero_stack,
-                                 max(state.min_raise, state.pot_size * 0.5 + 1))
-                return {"action": "raise", "amount": raise_size}
-            else:
-                raise_size = min(state.hero_stack, state.to_call * 3)
-                return {"action": "raise", "amount": raise_size}
+        is_strong = (
+            (is_pair and RANK_TO_INT["7"] <= rank_high <= RANK_TO_INT["9"]) or  # 99–77
+            (rank_high == RANK_TO_INT["A"] and rank_low == RANK_TO_INT["Q"] and same_suit) or  # AQs
+            (rank_high == RANK_TO_INT["A"] and rank_low == RANK_TO_INT["J"] and same_suit) or  # AJs
+            (rank_high == RANK_TO_INT["A"] and rank_low == RANK_TO_INT["T"] and same_suit) or  # ATs
+            (rank_high == RANK_TO_INT["A"] and rank_low == RANK_TO_INT["Q"] and not same_suit)   # AQo
+        )
 
-        if is_mid_pair or (is_broadway and gap <= 4):
-            # Playable
-            if state.to_call == 0:
-                if random.random() < 0.8:
-                    raise_size = min(state.hero_stack,
-                                     max(state.min_raise, state.pot_size * 0.5 + 1))
-                    return {"action": "raise", "amount": raise_size}
-                return {"action": "check"}
-            else:
-                pot_odds = self.compute_pot_odds(state)
-                if adj_equity >= pot_odds - 0.05:
-                    return {"action": "call"}
-                return {"action": "fold"}
+        is_playable = (
+            (is_pair and RANK_TO_INT["2"] <= rank_high <= RANK_TO_INT["6"]) or  # 66–22
+            (
+                same_suit and
+                rank_high <= RANK_TO_INT["9"] and
+                rank_high >= RANK_TO_INT["8"] and
+                rank_low == rank_high - 1 and
+                rank_low >= RANK_TO_INT["5"]  # suited connectors 98s–65s
+            ) or
+            (
+                same_suit and
+                rank_high == RANK_TO_INT["K"] and
+                RANK_TO_INT["T"] <= rank_low <= RANK_TO_INT["Q"]  # KQs–KTs suited
+            )
+        )
 
-        # Junk
-        if state.to_call > 0:
-            return {"action": "fold"}
-        # Sometimes bluff-raise if folded to us
-        if random.random() < 0.15:
+        to_call = state.to_call
+        unopened = to_call == 0
+
+        if is_premium or is_strong:
             raise_size = min(state.hero_stack,
-                             max(state.min_raise, state.pot_size * 0.4 + 1))
+                             max(state.min_raise, state.pot_size * 0.5 + to_call))
             return {"action": "raise", "amount": raise_size}
+
+        if is_playable:
+            if unopened:
+                if random.random() < 0.7:
+                    raise_size = min(state.hero_stack,
+                                     max(state.min_raise, state.pot_size * 0.5 + to_call))
+                    return {"action": "raise", "amount": raise_size}
+                return {"action": "call"}
+            else:
+                if to_call > 0:
+                    return {"action": "call"}
+                return {"action": "check"}
+
+        # Fold junk to aggression; check if free
+        if to_call > 0:
+            return {"action": "fold"}
         return {"action": "check"}
 
 
