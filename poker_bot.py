@@ -771,6 +771,11 @@ class PokerBot:
             elif hero_idx >= (2 * n) / 3:
                 hero_position = "late"
 
+        # Determine if hero was last aggressor preflop
+        hero_was_last_aggressor_preflop = False
+        if street in ("preflop", "flop"):
+            hero_was_last_aggressor_preflop = (abs(hero_bet - max_bet) < 1e-9 and hero_bet > 0)
+
         # ==== TODO: END mapping engine JSON → our internal format ====
 
         # Only act if it's actually our turn
@@ -790,7 +795,7 @@ class PokerBot:
             street=street,
             opponent_ids=opponent_ids,
             hero_position=hero_position,
-            hero_was_last_aggressor_preflop=False,
+            hero_was_last_aggressor_preflop=hero_was_last_aggressor_preflop,
         )
 
         decision = self.strategy.choose_action(state)
