@@ -67,6 +67,33 @@ def full_deck() -> List[Card]:
     return [Card(RANK_TO_INT[r], s) for r in RANKS for s in SUITS]
 
 
+def log_decision(state, equity, pot_odds, adj_equity, decision):
+    """
+    Print a readable decision block without altering game logic.
+    """
+    try:
+        street = (state.street or "").upper()
+        hole = ", ".join(card_str(c) for c in state.hole_cards) if state.hole_cards else "-"
+        board = ", ".join(card_str(c) for c in state.board_cards) if state.board_cards else "-"
+        eq = "N/A" if equity is None else f"{equity:.3f}"
+        adj = "N/A" if adj_equity is None else f"{adj_equity:.3f}"
+        po = "N/A" if pot_odds is None else f"{pot_odds:.3f}"
+        block = [
+            "---- DECISION ----",
+            f"Street: {street}",
+            f"Hole: {hole}",
+            f"Board: {board}",
+            f"Equity: {eq} | Adjusted: {adj} | Pot odds: {po}",
+            f"Pot: {state.pot_size} | To call: {state.to_call}",
+            f"Action: {decision}",
+            "------------------",
+        ]
+        print("\n".join(block))
+    except Exception:
+        # Logging should never break gameplay.
+        pass
+
+
 # ==========================
 # 5-card and 7-card evaluator
 # ==========================
@@ -331,6 +358,15 @@ class Strategy:
         Returns:
             {"action": "fold" | "call" | "raise" | "bet" | "check", "amount": optional}
         """
+        def add_meta(decision: Dict) -> Dict:
+            decision = dict(decision)
+            decision["meta"] = {
+                "equity": equity,
+                "pot_odds": pot_odds,
+                "adj_equity": adj_equity,
+            }
+            return decision
+
         # Estimate equity via Monte Carlo
         equity = estimate_equity(
             hole_cards=state.hole_cards,
@@ -358,37 +394,37 @@ class Strategy:
 
         # Preflop special rules
         if state.street == "preflop":
-            return self.preflop_decision(state, adj_equity)
+            return add_meta(self.preflop_decision(state, adj_equity))
 
         # Postflop logic
         margin = 0.05
         if state.to_call > 0:
             if adj_equity + margin < pot_odds:
-                return {"action": "fold"}
+                return add_meta({"action": "fold"})
 
             # Call region
             if adj_equity < pot_odds + 0.15:
-                return {"action": "call"}
+                return add_meta({"action": "call"})
 
             # Strong → raise/value
             raise_size = min(state.hero_stack, state.pot_size * 0.75 + state.to_call)
             if raise_size <= state.to_call:
-                return {"action": "call"}
-            return {"action": "raise", "amount": raise_size}
+                return add_meta({"action": "call"})
+            return add_meta({"action": "raise", "amount": raise_size})
         else:
             # No bet to us (we can check or bet)
             if adj_equity < 0.35:
-                return {"action": "check"}
+                return add_meta({"action": "check"})
             elif adj_equity < 0.55:
                 # semi-bluff
                 if random.random() < 0.4:
                     bet_size = min(state.hero_stack, state.pot_size * 0.5)
-                    return {"action": "bet", "amount": bet_size}
-                return {"action": "check"}
+                    return add_meta({"action": "bet", "amount": bet_size})
+                return add_meta({"action": "check"})
             else:
                 # strong value bet
                 bet_size = min(state.hero_stack, state.pot_size * 0.75)
-                return {"action": "bet", "amount": bet_size}
+                return add_meta({"action": "bet", "amount": bet_size})
 
     def preflop_decision(self, state: GameState, adj_equity: float) -> Dict:
         """
@@ -622,6 +658,15 @@ class PokerBot:
         print("Board:", [card_str(c) for c in board_cards])
         print("Pot:", pot, "To call:", to_call, "Stack:", hero_stack)
         print("Decision:", decision)
+
+        meta = decision.get("meta", {}) if isinstance(decision, dict) else {}
+        log_decision(
+            state=state,
+            equity=meta.get("equity"),
+            pot_odds=meta.get("pot_odds"),
+            adj_equity=meta.get("adj_equity"),
+            decision=decision,
+        )
 
         # Map internal decision → engine action message
         action_type = decision["action"]
