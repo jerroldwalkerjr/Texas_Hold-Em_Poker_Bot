@@ -70,6 +70,19 @@ def _hero_position(seats: List[dict], hero_uuid: str) -> str:
     return "middle"
 
 
+def _was_last_aggressor_preflop(round_state: dict, hero_uuid: str) -> bool:
+    """
+    Inspect action history to see who last raised/bet preflop.
+    """
+    histories = round_state.get("action_histories", {}) or {}
+    pre = histories.get("preflop", []) or []
+    for action in reversed(pre):
+        act = (action.get("action") or "").upper()
+        if act in ("RAISE", "BET", "BIGBLIND", "SMALLBLIND", "ANTE"):
+            return action.get("uuid") == hero_uuid
+    return False
+
+
 class StrategyPlayer(BasePokerPlayer):
     def __init__(self, hero_id: str = "hero"):
         super().__init__()
@@ -100,6 +113,7 @@ class StrategyPlayer(BasePokerPlayer):
         street = round_state.get("street", "preflop").lower()
         opponent_ids = _active_opponents(round_state, self.uuid)
         hero_position = _hero_position(seats, self.uuid)
+        hero_was_last_agg_pre = _was_last_aggressor_preflop(round_state, self.uuid)
 
         gs = GameState(
             hero_id=self.hero_id,
@@ -113,6 +127,7 @@ class StrategyPlayer(BasePokerPlayer):
             street=street,
             opponent_ids=opponent_ids,
             hero_position=hero_position,
+            hero_was_last_aggressor_preflop=hero_was_last_agg_pre,
         )
 
         decision = self.strategy.choose_action(gs)

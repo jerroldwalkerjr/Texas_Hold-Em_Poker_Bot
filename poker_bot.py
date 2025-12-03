@@ -339,6 +339,7 @@ class GameState:
     street: str                 # 'preflop', 'flop', 'turn', 'river'
     opponent_ids: List[str]
     hero_position: str          # 'early', 'middle', 'late'
+    hero_was_last_aggressor_preflop: bool = False
 
 
 class Strategy:
@@ -353,6 +354,72 @@ class Strategy:
         if state.to_call <= 0:
             return 0.0
         return state.to_call / (state.pot_size + state.to_call)
+
+    @staticmethod
+    def was_last_aggressor_preflop(state: GameState) -> bool:
+        return bool(getattr(state, "hero_was_last_aggressor_preflop", False))
+
+    @staticmethod
+    def _best_hand_score(cards: List[Card]):
+        """
+        Return best 5-card hand score tuple, or None if fewer than 5 cards.
+        """
+        if len(cards) < 5:
+            return None
+        if len(cards) == 5:
+            return evaluate_5cards(cards)
+        best = None
+        for combo in combinations(cards, 5):
+            score = evaluate_5cards(list(combo))
+            if best is None or score > best:
+                best = score
+        return best
+
+    @staticmethod
+    def has_flush_draw(state: GameState) -> bool:
+        cards = state.hole_cards + state.board_cards
+        suit_counts = Counter(c.suit for c in cards)
+        max_suit = max(suit_counts.values()) if suit_counts else 0
+        # Draw only (4 of a suit) and not already made flush
+        if max_suit < 4:
+            return False
+        made_flush = max_suit >= 5
+        return not made_flush
+
+    @staticmethod
+    def has_straight_draw(state: GameState) -> bool:
+        # Simple open-ended detection: any run of 4 consecutive ranks without made straight
+        cards = state.hole_cards + state.board_cards
+        ranks = set(c.rank for c in cards)
+        if 14 in ranks:
+            ranks.add(1)  # wheel support
+        sorted_ranks = sorted(ranks)
+        # If already straight or better, no draw
+        best_score = Strategy._best_hand_score(cards)
+        if best_score and best_score[0] >= 4:
+            return False
+
+        for r in sorted_ranks:
+            if {r, r + 1, r + 2, r + 3}.issubset(ranks):
+                return True
+        return False
+
+    @staticmethod
+    def has_top_pair_or_better(state: GameState) -> bool:
+        cards = state.hole_cards + state.board_cards
+        if len(state.board_cards) == 0:
+            return False
+        board_max = max(c.rank for c in state.board_cards)
+        score = Strategy._best_hand_score(cards)
+        if score is None:
+            return False
+        category = score[0]
+        if category >= 2:
+            return True
+        if category == 1:
+            pair_rank = score[1]
+            return pair_rank >= board_max
+        return False
 
     def choose_action(self, state: GameState) -> Dict:
         """
@@ -418,6 +485,28 @@ class Strategy:
             return add_meta({"action": "raise", "amount": raise_size})
         else:
             # No bet to us (we can check or bet)
+            if (
+                state.street == "flop"
+                and self.was_last_aggressor_preflop(state)
+                and state.to_call == 0
+            ):
+                board_cards = state.board_cards
+                board_ranks = [c.rank for c in board_cards]
+                top_board_rank = max(board_ranks) if board_ranks else 0
+                hole_ranks = [c.rank for c in state.hole_cards]
+                two_overcards = (
+                    len(hole_ranks) == 2 and len(board_ranks) >= 3 and min(hole_ranks) > top_board_rank
+                )
+                if (
+                    self.has_top_pair_or_better(state)
+                    or self.has_flush_draw(state)
+                    or self.has_straight_draw(state)
+                    or two_overcards
+                ):
+                    bet_size = min(state.hero_stack, state.pot_size * 0.4)
+                    return add_meta({"action": "bet", "amount": bet_size})
+                return add_meta({"action": "check"})
+
             if adj_equity < 0.35:
                 return add_meta({"action": "check"})
             elif adj_equity < 0.55:
@@ -688,6 +777,7 @@ class PokerBot:
             street=street,
             opponent_ids=opponent_ids,
             hero_position=hero_position,
+            hero_was_last_aggressor_preflop=False,
         )
 
         decision = self.strategy.choose_action(state)
