@@ -347,6 +347,19 @@ class Strategy:
         self.opp_model = opp_model
 
     @staticmethod
+    def get_sample_size(street: str) -> int:
+        street = (street or "").lower()
+        if street == "preflop":
+            return 300
+        if street == "flop":
+            return 600
+        if street == "turn":
+            return 1000
+        if street == "river":
+            return 1
+        return 800
+
+    @staticmethod
     def compute_pot_odds(state: GameState) -> float:
         """
         Pot odds = cost_to_call / (pot + cost_to_call)
@@ -440,7 +453,7 @@ class Strategy:
             hole_cards=state.hole_cards,
             board_cards=state.board_cards,
             num_opponents=state.num_active_opponents,
-            num_samples=800,
+            num_samples=self.get_sample_size(state.street),
         )
 
         pot_odds = self.compute_pot_odds(state)
