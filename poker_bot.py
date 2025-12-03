@@ -338,6 +338,7 @@ class GameState:
     num_active_opponents: int
     street: str                 # 'preflop', 'flop', 'turn', 'river'
     opponent_ids: List[str]
+    hero_position: str          # 'early', 'middle', 'late'
 
 
 class Strategy:
@@ -390,6 +391,10 @@ class Strategy:
         adj_equity = equity
         if tight_count > loose_count:
             adj_equity += 0.05  # table is tight → bluff/value more
+        if state.hero_position == "early":
+            adj_equity -= 0.05
+        elif state.hero_position == "late":
+            adj_equity += 0.05
         adj_equity = max(0.0, min(1.0, adj_equity))
 
         # Preflop special rules
@@ -596,9 +601,11 @@ class PokerBot:
 
         # Find hero entry
         hero_entry = None
+        hero_idx = None
         for p in players:
             if p.get("id") == self.hero_id:
                 hero_entry = p
+                hero_idx = players.index(p)
                 break
         if hero_entry is None:
             # Not seated / between hands
@@ -630,6 +637,15 @@ class PokerBot:
 
         num_active_opponents = len(opponent_ids)
 
+        # Determine hero position based on order in players list
+        hero_position = "middle"
+        if hero_idx is not None and len(players) > 0:
+            n = len(players)
+            if hero_idx < n / 3:
+                hero_position = "early"
+            elif hero_idx >= (2 * n) / 3:
+                hero_position = "late"
+
         # ==== TODO: END mapping engine JSON → our internal format ====
 
         # Only act if it's actually our turn
@@ -648,6 +664,7 @@ class PokerBot:
             num_active_opponents=num_active_opponents,
             street=street,
             opponent_ids=opponent_ids,
+            hero_position=hero_position,
         )
 
         decision = self.strategy.choose_action(state)

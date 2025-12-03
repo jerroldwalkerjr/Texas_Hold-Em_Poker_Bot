@@ -50,6 +50,26 @@ def _active_opponents(round_state: dict, hero_uuid: str) -> List[str]:
     ]
 
 
+def _hero_position(seats: List[dict], hero_uuid: str) -> str:
+    """
+    Derive a coarse position bucket (early/middle/late) from seating order.
+    """
+    hero_idx = None
+    for i, seat in enumerate(seats):
+        if seat.get("uuid") == hero_uuid:
+            hero_idx = i
+            break
+    if hero_idx is None or not seats:
+        return "middle"
+
+    n = len(seats)
+    if hero_idx < n / 3:
+        return "early"
+    if hero_idx >= (2 * n) / 3:
+        return "late"
+    return "middle"
+
+
 class StrategyPlayer(BasePokerPlayer):
     def __init__(self, hero_id: str = "hero"):
         super().__init__()
@@ -79,6 +99,7 @@ class StrategyPlayer(BasePokerPlayer):
 
         street = round_state.get("street", "preflop").lower()
         opponent_ids = _active_opponents(round_state, self.uuid)
+        hero_position = _hero_position(seats, self.uuid)
 
         gs = GameState(
             hero_id=self.hero_id,
@@ -91,6 +112,7 @@ class StrategyPlayer(BasePokerPlayer):
             num_active_opponents=len(opponent_ids),
             street=street,
             opponent_ids=opponent_ids,
+            hero_position=hero_position,
         )
 
         decision = self.strategy.choose_action(gs)
